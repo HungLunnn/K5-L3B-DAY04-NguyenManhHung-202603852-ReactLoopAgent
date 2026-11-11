@@ -12,6 +12,18 @@ CONFIG = {
 }
 
 
+def _env_or_fallback(primary, fallback):
+    return os.getenv(primary) or os.getenv(fallback)
+
+
+def _request_headers_for_provider(name, key):
+    headers = {'Authorization': f'Bearer {key}', 'User-Agent': 'StatusAgentLab/1.0'}
+    session_id = os.getenv('OPENCODE_SESSION_ID') or os.getenv('X_OPENCODE_SESSION')
+    if session_id:
+        headers['x-opencode-session'] = session_id
+    return headers
+
+
 def post_json(url, headers, payload):
     req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers={'Content-Type': 'application/json', **headers})
     try:
@@ -22,6 +34,17 @@ def post_json(url, headers, payload):
         raise RuntimeError(f'Provider trả HTTP {exc.code}; kiểm tra model, key và quota.') from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f'Không kết nối được provider: {exc.reason}') from exc
+
+
+def _normalize_openai_url(url):
+    if not url:
+        return url
+    normalized = url.rstrip('/')
+    if normalized.endswith('/chat/completions'):
+        return normalized
+    if normalized.endswith('/responses'):
+        return normalized.replace('/responses', '/chat/completions')
+    return normalized + '/chat/completions'
 
 
 class Provider:
@@ -36,10 +59,16 @@ class Provider:
         if not model:
             raise ValueError('Cần đặt MODEL là model có hỗ trợ tool calling.')
         self.name, self.model = name, model
-        key_name, self.url = CONFIG[name]
-        self.key = os.getenv(key_name)
+        key_name, default_url = CONFIG[name]
+        self.key = _env_or_fallback(key_name, 'API_KEY')
         if not self.key:
             raise ValueError(f'Thiếu {key_name}; xem README.md.')
+
+        if name == 'openai':
+            base_url = _env_or_fallback('OPENAI_BASE_URL', 'API_ENDPOINT') or default_url
+            self.url = _normalize_openai_url(base_url)
+        else:
+            self.url = default_url
 
     def complete(self, messages, schemas):
         if self.name == 'anthropic':
